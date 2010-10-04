@@ -113,6 +113,23 @@ def is_country(cursor, text, text_starting_index, previous_result):
             current_word = pulled_word
             # Make a note of the real end of the word, ignoring any trailing whitespace
             word_end_index = (text_starting_index-end_skipped)
+            
+            # We've indexed the locations by the word they end with, so find all of them
+            # that have the current word as a suffix
+            select = 'SELECT * FROM countries WHERE last_word=%s;'
+            values = (pulled_word, )
+#            print "Calling '"+(select % values)+"'"
+            cursor.execute(select, values)
+            candidate_rows = cursor.fetchall()
+            # Nothing ended with this word, so we can skip the rest of the testing
+            if len(candidate_rows) < 1:
+                break
+            
+            name_map = {}
+            for candidate_row in candidate_rows:
+                candidate_dict = get_dict_from_row(cursor, candidate_row)
+                name = candidate_dict['country'].lower()
+                name_map[name] = candidate_dict
         else:
             #
             current_word = pulled_word+' '+current_word
@@ -127,12 +144,10 @@ def is_country(cursor, text, text_starting_index, previous_result):
         if current_word[0:1].islower():
             continue
 
-        # Now query the database to see if we have a country with this name
-        select = 'SELECT * FROM countries WHERE country=%s LIMIT 1;'
-        values = (current_word, )
-#        print "Calling '"+(select % values)+"'"
-        cursor.execute(select, values)
-        found_row = cursor.fetchone()
+        name_key = current_word.lower()
+        if name_key in name_map:
+            found_row = name_map[name_key]
+
         if found_row is not None:
             # We've found a valid country name
             break
@@ -152,12 +167,10 @@ def is_country(cursor, text, text_starting_index, previous_result):
         }
     else:
         current_result = previous_result
-    
-    found_dict = get_dict_from_row(cursor, found_row)
                                         
-    country_code = found_dict['country_code']
-    lat = found_dict['lat']
-    lon = found_dict['lon']
+    country_code = found_row['country_code']
+    lat = found_row['lat']
+    lon = found_row['lon']
 
     # Prepend all the information we've found out about this location to the start of the 'found_tokens'
     # array in the result
@@ -200,6 +213,40 @@ def is_city(cursor, text, text_starting_index, previous_result):
         if current_word == '':
             current_word = pulled_word
             word_end_index = (text_starting_index-end_skipped)
+
+            select = 'SELECT * FROM cities WHERE last_word=%s'
+            values = (pulled_word, )
+
+            if country_code is not None:
+                select += ' AND country=%s'
+
+            if region_code is not None:
+                select += ' AND region_code=%s'
+
+            # There may be multiple cities with the same name, so pick the one with the largest population
+            select += ' ORDER BY population;'
+            
+            # Unfortunately tuples are immutable, so I have to use this logic to set up the correct ones
+            if country_code is None and region_code is None:
+                values = (current_word, )
+            elif country_code is not None and region_code is None:
+                values = (current_word, country_code)
+            elif country_code is None and region_code is not None:
+                values = (current_word, region_code)
+            else:
+                values = (current_word, country_code, region_code)
+
+#            print "Calling '"+(select % values)+"'"
+            cursor.execute(select, values)
+            candidate_rows = cursor.fetchall()
+            if len(candidate_rows) < 1:
+                break
+            
+            name_map = {}
+            for candidate_row in candidate_rows:
+                candidate_dict = get_dict_from_row(cursor, candidate_row)
+                name = candidate_dict['city'].lower()
+                name_map[name] = candidate_dict
         else:
             current_word = pulled_word+' '+current_word
 
@@ -209,28 +256,10 @@ def is_city(cursor, text, text_starting_index, previous_result):
         if current_word[0:1].islower():
             continue
 
-        select = 'SELECT * FROM cities WHERE city=%s'
-        if country_code is not None:
-            select += ' AND country=%s'
+        name_key = current_word.lower()
+        if name_key in name_map:
+            found_row = name_map[name_key]
 
-        if region_code is not None:
-            select += ' AND region_code=%s'
-        
-        # Unfortunately tuples are immutable, so I have to use this logic to set up the correct ones
-        if country_code is None and region_code is None:
-            values = (current_word, )
-        elif country_code is not None and region_code is None:
-            values = (current_word, country_code)
-        elif country_code is None and region_code is not None:
-            values = (current_word, region_code)
-        else:
-            values = (current_word, country_code, region_code)
-        
-        # There may be multiple cities with the same name, so pick the one with the largest population
-        select += ' ORDER BY population DESC LIMIT 1;'
-#        print "Calling '"+(select % values)+"'"
-        cursor.execute(select, values)
-        found_row = cursor.fetchone()
         if found_row is not None:
             break
         if current_index < 0:
@@ -245,11 +274,9 @@ def is_city(cursor, text, text_starting_index, previous_result):
         }
     else:
         current_result = previous_result
-    
-    found_dict = get_dict_from_row(cursor, found_row)
                                         
-    lat = found_dict['lat']
-    lon = found_dict['lon']
+    lat = found_row['lat']
+    lon = found_row['lon']
                 
     current_result['found_tokens'].insert(0, {
         'type': 'CITY',
@@ -284,6 +311,27 @@ def is_region(cursor, text, text_starting_index, previous_result):
         if current_word == '':
             current_word = pulled_word
             word_end_index = (text_starting_index-end_skipped)
+
+            select = 'SELECT * FROM regions WHERE last_word=%s'
+            if country_code is not None:
+                select += ' AND country_code=%s'
+            select += ';'
+            
+            if country_code is None:
+                values = (pulled_word, )
+            else:
+                values = (pulled_word, country_code)
+#            print "Calling '"+(select % values)+"'"
+            cursor.execute(select, values)
+            candidate_rows = cursor.fetchall()
+            if len(candidate_rows) < 1:
+                break
+            
+            name_map = {}
+            for candidate_row in candidate_rows:
+                candidate_dict = get_dict_from_row(cursor, candidate_row)
+                name = candidate_dict['region'].lower()
+                name_map[name] = candidate_dict
         else:
             current_word = pulled_word+' '+current_word
 
@@ -292,20 +340,11 @@ def is_region(cursor, text, text_starting_index, previous_result):
 
         if current_word[0:1].islower():
             continue
+
+        name_key = current_word.lower()
+        if name_key in name_map:
+            found_row = name_map[name_key]
         
-        select = 'SELECT * FROM regions WHERE region=%s'
-        if country_code is not None:
-            select += ' AND country_code=%s'
-        
-        if country_code is None:
-            values = (current_word, )
-        else:
-            values = (current_word, country_code)
-        
-        select += ' LIMIT 1;'
-#        print "Calling '"+(select % values)+"'"
-        cursor.execute(select, values)
-        found_row = cursor.fetchone()
         if found_row is not None:
             break
         if current_index < 0:
@@ -320,12 +359,10 @@ def is_region(cursor, text, text_starting_index, previous_result):
         }
     else:
         current_result = previous_result
-    
-    found_dict = get_dict_from_row(cursor, found_row)
 
-    region_code = found_dict['region_code']
-    lat = found_dict['lat']
-    lon = found_dict['lon']
+    region_code = found_row['region_code']
+    lat = found_row['lat']
+    lon = found_row['lon']
                 
     current_result['found_tokens'].insert(0, {
         'type': 'REGION',

@@ -16,7 +16,9 @@ def load_cities(cursor):
         region_code CHAR(2),
         population INT,
         lat FLOAT,
-        lon FLOAT);
+        lon FLOAT,
+        last_word VARCHAR(32),
+        INDEX(last_word(10)));
     """)
 
     reader = csv.reader(open(geodict_config.source_folder+'worldcitiespop.csv', 'rb'))
@@ -35,11 +37,15 @@ def load_cities(cursor):
         if population is '':
             population = 0
 
+        city = city.strip()
+
+        last_word, index, skipped = geodict_lib.pull_word_from_end(city, len(city)-1)
+
         cursor.execute("""
-            INSERT IGNORE INTO cities (city, country, region_code, population, lat, lon)
-                values (%s, %s, %s, %s, %s, %s)
+            INSERT IGNORE INTO cities (city, country, region_code, population, lat, lon, last_word)
+                values (%s, %s, %s, %s, %s, %s, %s)
             """,
-            (city, country, region_code, population, lat, lon))
+            (city, country, region_code, population, lat, lon, last_word))
 
 def load_countries(cursor):
     cursor.execute("""CREATE TABLE IF NOT EXISTS countries (
@@ -47,7 +53,9 @@ def load_countries(cursor):
         PRIMARY KEY(country),
         country_code CHAR(2),
         lat FLOAT,
-        lon FLOAT);
+        lon FLOAT,
+        last_word VARCHAR(32),
+        INDEX(last_word(10)));
     """)
 
     reader = csv.reader(open(geodict_config.source_folder+'countrypositions.csv', 'rb'))
@@ -79,11 +87,15 @@ def load_countries(cursor):
         
         for country_name in country_names_list:
         
+            country_name = country_name.strip()
+        
+            last_word, index, skipped = geodict_lib.pull_word_from_end(country_name, len(country_name)-1)
+
             cursor.execute("""
-                INSERT IGNORE INTO countries (country, country_code, lat, lon)
-                    values (%s, %s, %s, %s)
+                INSERT IGNORE INTO countries (country, country_code, lat, lon, last_word)
+                    values (%s, %s, %s, %s, %s)
                 """,
-                (country_name, country_code, lat, lon))
+                (country_name, country_code, lat, lon, last_word))
 
 def load_regions(cursor):
     cursor.execute("""CREATE TABLE IF NOT EXISTS regions (
@@ -92,7 +104,9 @@ def load_regions(cursor):
         region_code CHAR(4),
         country_code CHAR(2),
         lat FLOAT,
-        lon FLOAT);
+        lon FLOAT,
+        last_word VARCHAR(32),
+        INDEX(last_word(10)));
     """)
 
     reader = csv.reader(open(geodict_config.source_folder+'us_statepositions.csv', 'rb'))
@@ -125,12 +139,16 @@ def load_regions(cursor):
         lon = us_state_positions[region_code]['lon']
         
         for state_name in state_names_list:
+    
+            state_name = state_name.strip()
+
+            last_word, index, skipped = geodict_lib.pull_word_from_end(state_name, len(state_name)-1)
         
             cursor.execute("""
-                INSERT IGNORE INTO regions (region, region_code, country_code, lat, lon)
-                    values (%s, %s, %s, %s, %s)
+                INSERT IGNORE INTO regions (region, region_code, country_code, lat, lon, last_word)
+                    values (%s, %s, %s, %s, %s, %s)
                 """,
-                (state_name, region_code, country_code, lat, lon))
+                (state_name, region_code, country_code, lat, lon, last_word))
 
 
 cursor = geodict_lib.get_database_connection()
