@@ -14,8 +14,10 @@
 #    You should have received a copy of the GNU General Public License
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import MySQLdb, string
+import MySQLdb, string, StringIO
 import geodict_config
+from tempfile import TemporaryFile
+from struct import unpack, pack, calcsize
 
 # The main entry point. This function takes an unstructured text string and returns a list of all the
 # fragments it could identify as locations, together with lat/lon positions
@@ -29,12 +31,24 @@ def find_locations_in_text(text):
 
     current_index = len(text)-1
     result = []
+
+    setup_countries_cache(cursor)
+    setup_regions_cache(cursor)
     
     # This loop goes through the text string in *reverse* order. Since locations in English are typically
     # described with the broadest category last, preceded by more and more specific designations towards
     # the beginning, it simplifies things to walk the string in that direction too
     while current_index>=0:
-    
+
+        current_word, pulled_index, ignored_skipped = pull_word_from_end(text, current_index)
+        lower_word = current_word.lower()
+        could_be_country = lower_word in countries_cache
+        could_be_region = lower_word in regions_cache
+        
+        if not could_be_country and not could_be_region:
+            current_index = pulled_index
+            continue
+
         # This holds the results of the match function for the final element of the sequence. This lets us
         # optimize out repeated calls to see if the end of the current string is a country for example
         match_cache = {}
@@ -95,9 +109,38 @@ def find_locations_in_text(text):
 
 # Functions that look at a small portion of the text, and try to identify any location identifiers
 
+# Caches the countries and regions tables in memory
+countries_cache = {}
+
+def setup_countries_cache(cursor):
+    select = 'SELECT * FROM countries;'
+    cursor.execute(select)
+    candidate_rows = cursor.fetchall()
+    
+    for candidate_row in candidate_rows:
+        candidate_dict = get_dict_from_row(cursor, candidate_row)
+        last_word = candidate_dict['last_word'].lower()
+        if last_word not in countries_cache:
+            countries_cache[last_word] = []
+        countries_cache[last_word].append(candidate_dict)
+
+regions_cache = {}
+
+def setup_regions_cache(cursor):
+    select = 'SELECT * FROM regions;'
+    cursor.execute(select)
+    candidate_rows = cursor.fetchall()
+    
+    for candidate_row in candidate_rows:
+        candidate_dict = get_dict_from_row(cursor, candidate_row)
+        last_word = candidate_dict['last_word'].lower()
+        if last_word not in regions_cache:
+            regions_cache[last_word] = []
+        regions_cache[last_word].append(candidate_dict)
+
 # Matches the current fragment against our database of countries
 def is_country(cursor, text, text_starting_index, previous_result):
-
+        
     current_word = ''
     current_index = text_starting_index
     pulled_word_count = 0
@@ -116,18 +159,22 @@ def is_country(cursor, text, text_starting_index, previous_result):
             
             # We've indexed the locations by the word they end with, so find all of them
             # that have the current word as a suffix
-            select = 'SELECT * FROM countries WHERE last_word=%s;'
-            values = (pulled_word, )
-#            print "Calling '"+(select % values)+"'"
-            cursor.execute(select, values)
-            candidate_rows = cursor.fetchall()
-            # Nothing ended with this word, so we can skip the rest of the testing
-            if len(candidate_rows) < 1:
+            last_word = pulled_word.lower()
+            if last_word not in countries_cache:
                 break
+            candidate_dicts = countries_cache[last_word]
+#            select = 'SELECT * FROM countries WHERE last_word=%s;'
+#            values = (pulled_word, )
+##            print "Calling '"+(select % values)+"'"
+#            cursor.execute(select, values)
+#            candidate_rows = cursor.fetchall()
+#            # Nothing ended with this word, so we can skip the rest of the testing
+#            if len(candidate_rows) < 1:
+#                break
             
             name_map = {}
-            for candidate_row in candidate_rows:
-                candidate_dict = get_dict_from_row(cursor, candidate_row)
+            for candidate_dict in candidate_dicts:
+#                candidate_dict = get_dict_from_row(cursor, candidate_row)
                 name = candidate_dict['country'].lower()
                 name_map[name] = candidate_dict
         else:
@@ -189,7 +236,7 @@ def is_country(cursor, text, text_starting_index, previous_result):
 # Looks through our database of 2 million towns and cities around the world to locate any that match the
 # words at the end of the current text fragment
 def is_city(cursor, text, text_starting_index, previous_result):
-
+    
     # If we're part of a sequence, then use any country or region information to narrow down our search
     country_code = None
     region_code = None
@@ -311,25 +358,22 @@ def is_region(cursor, text, text_starting_index, previous_result):
         if current_word == '':
             current_word = pulled_word
             word_end_index = (text_starting_index-end_skipped)
-
-            select = 'SELECT * FROM regions WHERE last_word=%s'
-            if country_code is not None:
-                select += ' AND country_code=%s'
-            select += ';'
             
-            if country_code is None:
-                values = (pulled_word, )
-            else:
-                values = (pulled_word, country_code)
-#            print "Calling '"+(select % values)+"'"
-            cursor.execute(select, values)
-            candidate_rows = cursor.fetchall()
-            if len(candidate_rows) < 1:
+            last_word = pulled_word.lower()
+            if last_word not in regions_cache:
                 break
+            all_candidate_dicts = regions_cache[last_word]
+            if country_code is not None:
+                candidate_dicts = []
+                for possible_dict in all_candidate_dicts:
+                    candidate_country = possible_dict['country_code']
+                    if candidate_country.lower() == country_code.lower():
+                        candidate_dicts.append(possible_dict)
+            else:
+                candidate_dicts = all_candidate_dicts
             
             name_map = {}
-            for candidate_row in candidate_rows:
-                candidate_dict = get_dict_from_row(cursor, candidate_row)
+            for candidate_dict in candidate_dicts:
                 name = candidate_dict['region'].lower()
                 name_map[name] = candidate_dict
         else:
@@ -404,11 +448,18 @@ def get_database_connection():
 
     return cursor
 
+
+# Characters to ignore when pulling out words
+whitespace = set(string.whitespace+"'\",.-/\n\r<>")
+
+tokenized_words = {}
+
 # Walks backwards through the text from the end, pulling out a single unbroken sequence of non-whitespace
 # characters, trimming any whitespace off the end
-def pull_word_from_end(text, index):
+def pull_word_from_end(text, index, use_cache=True):
 
-    whitespace = set(string.whitespace+"'\",.-/\n\r<>")
+    if use_cache and index in tokenized_words:
+        return tokenized_words[index]
 
     found_word = ''
     current_index = index
@@ -432,7 +483,10 @@ def pull_word_from_end(text, index):
     # reverse the result (since we're appending for efficiency's sake)
     found_word = found_word[::-1]
     
-    return (found_word, current_index, end_skipped)
+    result = (found_word, current_index, end_skipped)
+    tokenized_words[index] = result
+
+    return result
 
 # Converts the result of a MySQL fetch into an associative dictionary, rather than a numerically indexed list
 def get_dict_from_row(cursor, row):

@@ -18,6 +18,7 @@
 
 import csv, os, os.path, MySQLdb, sys, json, csv
 import geodict_lib, cliargs
+import cProfile
 
 args = {
     'input': {
@@ -63,6 +64,8 @@ else:
         die("Couldn't write to file '"+output+"'")
         
 text = input_handle.read()
+
+#cProfile.run('locations = geodict_lib.find_locations_in_text(text)')
 
 locations = geodict_lib.find_locations_in_text(text)
 
